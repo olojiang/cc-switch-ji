@@ -1125,6 +1125,10 @@ impl ProviderService {
         }
     }
 
+    pub(crate) fn normalize_provider_if_claude_for_import(provider: &mut Provider) {
+        Self::normalize_provider_if_claude(&AppType::Claude, provider);
+    }
+
     /// Check whether a provider exists in live config, tolerating parse errors
     /// only for providers that are explicitly marked as DB-only.
     fn check_live_config_exists(
@@ -1175,6 +1179,19 @@ impl ProviderService {
         }
         crate::settings::get_effective_current_provider(&state.db, &app_type)
             .map(|opt| opt.unwrap_or_default())
+    }
+
+    /// Clear the current provider marker for exclusive-mode apps.
+    pub fn clear_current(state: &AppState, app_type: AppType) -> Result<(), AppError> {
+        if app_type.is_additive_mode() {
+            return Err(AppError::Message(format!(
+                "App {} does not support clearing current provider",
+                app_type.as_str()
+            )));
+        }
+
+        crate::settings::set_current_provider(&app_type, None)?;
+        state.db.clear_current_provider(app_type.as_str())
     }
 
     /// Add a new provider

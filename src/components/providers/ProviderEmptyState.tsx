@@ -1,4 +1,4 @@
-import { Download, Users } from "lucide-react";
+import { Download, Upload, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { AppId } from "@/lib/api/types";
@@ -7,12 +7,14 @@ interface ProviderEmptyStateProps {
   appId: AppId;
   onCreate?: () => void;
   onImport?: () => void;
+  onImportList?: () => void;
 }
 
 export function ProviderEmptyState({
   appId,
   onCreate,
   onImport,
+  onImportList,
 }: ProviderEmptyStateProps) {
   const { t } = useTranslation();
   const showSnippetHint =
@@ -41,6 +43,14 @@ export function ProviderEmptyState({
                   defaultValue: "将 Claude Code 中已有的供应商导入",
                 })
               : t("provider.importCurrent")}
+          </Button>
+        )}
+        {onImportList && (
+          <Button variant="outline" onClick={onImportList}>
+            <Upload className="mr-2 h-4 w-4" />
+            {t("provider.importList", {
+              defaultValue: "导入列表",
+            })}
           </Button>
         )}
         {onCreate && (

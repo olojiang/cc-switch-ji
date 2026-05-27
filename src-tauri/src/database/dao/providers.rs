@@ -309,6 +309,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_current_provider(&self, app_type: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "UPDATE providers SET is_current = 0 WHERE app_type = ?1",
+            params![app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,
@@ -711,6 +721,32 @@ impl Database {
 mod ensure_official_seed_tests {
     use crate::app_config::AppType;
     use crate::database::{Database, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID};
+    use crate::provider::Provider;
+    use serde_json::json;
+
+    #[test]
+    fn clear_current_provider_unsets_all_current_rows_for_app() {
+        let db = Database::memory().expect("memory db");
+        let provider = Provider::with_id("p1".into(), "Provider".into(), json!({}), None);
+
+        db.save_provider(AppType::Claude.as_str(), &provider)
+            .expect("save provider");
+        db.set_current_provider(AppType::Claude.as_str(), "p1")
+            .expect("set current");
+        assert_eq!(
+            db.get_current_provider(AppType::Claude.as_str())
+                .expect("get current")
+                .as_deref(),
+            Some("p1")
+        );
+
+        db.clear_current_provider(AppType::Claude.as_str())
+            .expect("clear current");
+        assert!(db
+            .get_current_provider(AppType::Claude.as_str())
+            .expect("get current")
+            .is_none());
+    }
 
     #[test]
     fn ensure_inserts_when_missing() {

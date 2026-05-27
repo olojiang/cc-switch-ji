@@ -338,14 +338,14 @@ fn default_show_in_tray() -> bool {
 }
 
 fn default_minimize_to_tray_on_close() -> bool {
-    true
+    false
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             show_in_tray: true,
-            minimize_to_tray_on_close: true,
+            minimize_to_tray_on_close: false,
             use_app_window_controls: false,
             enable_claude_plugin_integration: false,
             skip_claude_onboarding: false,

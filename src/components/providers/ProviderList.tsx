@@ -13,7 +13,18 @@ import {
   type CSSProperties,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, Search, X } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Loader2,
+  RotateCcw,
+  Search,
+  TestTube2,
+  Upload,
+  X,
+  XCircle,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -47,6 +58,10 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
+import {
+  streamCheckAllProviders,
+  type StreamCheckResult,
+} from "@/lib/api/model-test";
 
 interface ProviderListProps {
   providers: Record<string, Provider>;
@@ -92,6 +107,7 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
@@ -195,6 +211,11 @@ export function ProviderList({
   const [showStreamCheckConfirm, setShowStreamCheckConfirm] = useState(false);
   const [pendingTestProvider, setPendingTestProvider] =
     useState<Provider | null>(null);
+  const [pendingTestAll, setPendingTestAll] = useState(false);
+  const [isTestingAll, setIsTestingAll] = useState(false);
+  const [testResults, setTestResults] = useState<
+    Record<string, StreamCheckResult>
+  >({});
   const { data: claudeDesktopStatus } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
@@ -208,17 +229,84 @@ export function ProviderList({
     queryFn: () => settingsApi.get(),
   });
 
+  const runSingleTest = useCallback(
+    async (provider: Provider) => {
+      const result = await checkProvider(provider.id, provider.name);
+      if (result) {
+        setTestResults((prev) => ({ ...prev, [provider.id]: result }));
+      }
+    },
+    [checkProvider],
+  );
+
   const handleTest = useCallback(
     (provider: Provider) => {
       if (!settings?.streamCheckConfirmed) {
         setPendingTestProvider(provider);
         setShowStreamCheckConfirm(true);
       } else {
-        checkProvider(provider.id, provider.name);
+        void runSingleTest(provider);
       }
     },
-    [checkProvider, settings?.streamCheckConfirmed],
+    [runSingleTest, settings?.streamCheckConfirmed],
   );
+
+  const runTestAll = useCallback(async () => {
+    if (isTestingAll) return;
+
+    setIsTestingAll(true);
+    try {
+      const results = await streamCheckAllProviders(appId);
+      const nextResults: Record<string, StreamCheckResult> = {};
+      for (const [providerId, result] of results) {
+        nextResults[providerId] = result;
+      }
+
+      setTestResults((prev) => ({ ...prev, ...nextResults }));
+
+      const passed = results.filter(([, result]) => result.success).length;
+      const failed = results.length - passed;
+      if (failed === 0) {
+        toast.success(
+          t("streamCheck.allPassed", {
+            passed,
+            total: results.length,
+            defaultValue: `全部测试通过 (${passed}/${results.length})`,
+          }),
+        );
+      } else {
+        toast.warning(
+          t("streamCheck.allFinishedWithFailures", {
+            passed,
+            failed,
+            total: results.length,
+            defaultValue: `测试完成：${passed} 个成功，${failed} 个失败`,
+          }),
+          { closeButton: true },
+        );
+      }
+    } catch (error) {
+      toast.error(
+        t("streamCheck.allFailed", {
+          error: error instanceof Error ? error.message : String(error ?? ""),
+          defaultValue: "批量测试失败：{{error}}",
+        }),
+      );
+    } finally {
+      setIsTestingAll(false);
+    }
+  }, [appId, isTestingAll, t]);
+
+  const handleTestAll = useCallback(() => {
+    if (!settings?.streamCheckConfirmed) {
+      setPendingTestProvider(null);
+      setPendingTestAll(true);
+      setShowStreamCheckConfirm(true);
+      return;
+    }
+
+    void runTestAll();
+  }, [runTestAll, settings?.streamCheckConfirmed]);
 
   const handleStreamCheckConfirm = async () => {
     setShowStreamCheckConfirm(false);
@@ -232,13 +320,16 @@ export function ProviderList({
       console.error("Failed to save stream check confirmed:", error);
     }
     if (pendingTestProvider) {
-      checkProvider(pendingTestProvider.id, pendingTestProvider.name);
+      void runSingleTest(pendingTestProvider);
       setPendingTestProvider(null);
+    }
+    if (pendingTestAll) {
+      setPendingTestAll(false);
+      void runTestAll();
     }
   };
 
   // Import current live config as default provider
-  const queryClient = useQueryClient();
   const importMutation = useMutation({
     mutationFn: async (): Promise<boolean> => {
       if (appId === "opencode") {
@@ -274,6 +365,105 @@ export function ProviderList({
       toast.error(error.message);
     },
   });
+
+  const [isProviderListTransferring, setIsProviderListTransferring] =
+    useState(false);
+
+  const providerListExportName = useCallback(() => {
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+    return `cc-switch-claude-providers-${stamp}.json`;
+  }, []);
+
+  const handleExportClaudeProviders = useCallback(async () => {
+    if (appId !== "claude" || isProviderListTransferring) return;
+    setIsProviderListTransferring(true);
+    try {
+      const destination = await settingsApi.saveJsonFileDialog(
+        providerListExportName(),
+      );
+      if (!destination) return;
+
+      const result =
+        await providersApi.exportClaudeProvidersToFile(destination);
+      toast.success(
+        t("provider.exportListSuccess", {
+          defaultValue: "已导出 {{count}} 个 Claude Code 供应商",
+          count: result.total,
+        }) + `\n${result.filePath}`,
+        { closeButton: true },
+      );
+    } catch (error) {
+      console.error("[ProviderList] Failed to export Claude providers", error);
+      toast.error(
+        t("provider.exportListFailed", {
+          defaultValue: "导出供应商列表失败：{{message}}",
+          message: error instanceof Error ? error.message : String(error ?? ""),
+        }),
+      );
+    } finally {
+      setIsProviderListTransferring(false);
+    }
+  }, [appId, isProviderListTransferring, providerListExportName, t]);
+
+  const handleImportClaudeProviders = useCallback(async () => {
+    if (appId !== "claude" || isProviderListTransferring) return;
+    setIsProviderListTransferring(true);
+    try {
+      const filePath = await settingsApi.openJsonFileDialog();
+      if (!filePath) return;
+
+      const result = await providersApi.importClaudeProvidersFromFile(filePath);
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await queryClient.invalidateQueries({ queryKey: ["providers"] });
+      await providersApi.updateTrayMenu();
+
+      toast.success(
+        t("provider.importListSuccess", {
+          defaultValue:
+            "已导入 {{imported}} 个、更新 {{updated}} 个 Claude Code 供应商",
+          imported: result.imported ?? 0,
+          updated: result.updated ?? 0,
+          skipped: result.skipped ?? 0,
+          total: result.total,
+        }),
+        { closeButton: true },
+      );
+    } catch (error) {
+      console.error("[ProviderList] Failed to import Claude providers", error);
+      toast.error(
+        t("provider.importListFailed", {
+          defaultValue: "导入供应商列表失败：{{message}}",
+          message: error instanceof Error ? error.message : String(error ?? ""),
+        }),
+      );
+    } finally {
+      setIsProviderListTransferring(false);
+    }
+  }, [appId, isProviderListTransferring, queryClient, t]);
+
+  const handleClearClaudeCurrentProvider = useCallback(async () => {
+    if (appId !== "claude" || !currentProviderId) return;
+
+    try {
+      await providersApi.clearCurrent(appId);
+      await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      await providersApi.updateTrayMenu();
+      toast.success(
+        t("provider.clearInUseSuccess", {
+          defaultValue: "已取消所有 Claude Code 供应商的使用状态",
+        }),
+        { closeButton: true },
+      );
+    } catch (error) {
+      toast.error(
+        t("provider.clearInUseFailed", {
+          defaultValue: "取消使用状态失败：{{message}}",
+          message: error instanceof Error ? error.message : String(error ?? ""),
+        }),
+      );
+    }
+  }, [appId, currentProviderId, queryClient, t]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -313,6 +503,21 @@ export function ProviderList({
       );
     });
   }, [searchTerm, sortedProviders]);
+
+  const testSummary = useMemo(() => {
+    const visibleResults = sortedProviders
+      .map((provider) => testResults[provider.id])
+      .filter((result): result is StreamCheckResult => Boolean(result));
+
+    if (visibleResults.length === 0) return null;
+
+    const passed = visibleResults.filter((result) => result.success).length;
+    return {
+      passed,
+      failed: visibleResults.length - passed,
+      total: visibleResults.length,
+    };
+  }, [sortedProviders, testResults]);
 
   const claudeDesktopStatusMessages = useMemo(() => {
     if (appId !== "claude-desktop" || !claudeDesktopStatus) return [];
@@ -390,6 +595,9 @@ export function ProviderList({
         appId={appId}
         onCreate={onCreate}
         onImport={() => importMutation.mutate()}
+        onImportList={
+          appId === "claude" ? handleImportClaudeProviders : undefined
+        }
       />
     );
   }
@@ -441,7 +649,8 @@ export function ProviderList({
                 onOpenWebsite={onOpenWebsite}
                 onOpenTerminal={onOpenTerminal}
                 onTest={handleTest}
-                isTesting={isChecking(provider.id)}
+                isTesting={isChecking(provider.id) || isTestingAll}
+                testResult={testResults[provider.id]}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}
                 isAutoFailoverEnabled={isFailoverModeActive}
@@ -470,6 +679,86 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {testSummary && (
+          <div
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 text-xs text-muted-foreground"
+            title={t("streamCheck.lastBatchSummary", {
+              passed: testSummary.passed,
+              failed: testSummary.failed,
+              total: testSummary.total,
+              defaultValue:
+                "最近测试：{{passed}} 成功，{{failed}} 失败，共 {{total}} 个",
+            })}
+          >
+            {testSummary.failed === 0 ? (
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            ) : (
+              <XCircle className="h-3.5 w-3.5 text-red-500" />
+            )}
+            <span>
+              {testSummary.passed}/{testSummary.total}
+            </span>
+          </div>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleTestAll}
+          disabled={isTestingAll}
+        >
+          {isTestingAll ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <TestTube2 className="mr-2 h-4 w-4" />
+          )}
+          {t("streamCheck.testAll", {
+            defaultValue: "测试所有",
+          })}
+        </Button>
+        {appId === "claude" && (
+          <>
+            {currentProviderId && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleClearClaudeCurrentProvider}
+              >
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {t("provider.clearInUse", {
+                  defaultValue: "取消使用",
+                })}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleImportClaudeProviders}
+              disabled={isProviderListTransferring}
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {t("provider.importList", {
+                defaultValue: "导入列表",
+              })}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportClaudeProviders}
+              disabled={isProviderListTransferring}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              {t("provider.exportList", {
+                defaultValue: "导出列表",
+              })}
+            </Button>
+          </>
+        )}
+      </div>
       {claudeDesktopStatusMessages.length > 0 && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2 font-medium">
@@ -569,6 +858,7 @@ export function ProviderList({
         onCancel={() => {
           setShowStreamCheckConfirm(false);
           setPendingTestProvider(null);
+          setPendingTestAll(false);
         }}
       />
     </div>
@@ -594,6 +884,7 @@ interface SortableProviderCardProps {
   onOpenTerminal?: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
   isTesting: boolean;
+  testResult?: StreamCheckResult;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
   isAutoFailoverEnabled: boolean;
@@ -625,6 +916,7 @@ function SortableProviderCard({
   onOpenTerminal,
   onTest,
   isTesting,
+  testResult,
   isProxyRunning,
   isProxyTakeover,
   isAutoFailoverEnabled,
@@ -672,6 +964,7 @@ function SortableProviderCard({
         onOpenTerminal={onOpenTerminal}
         onTest={onTest}
         isTesting={isTesting}
+        testResult={testResult}
         isProxyRunning={isProxyRunning}
         isProxyTakeover={isProxyTakeover}
         dragHandleProps={{

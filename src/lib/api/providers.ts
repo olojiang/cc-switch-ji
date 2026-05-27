@@ -46,6 +46,16 @@ export interface ClaudeDesktopDefaultRoute {
   supports1m: boolean;
 }
 
+export interface ProviderListTransferResult {
+  success: boolean;
+  message: string;
+  filePath: string;
+  total: number;
+  imported?: number;
+  updated?: number;
+  skipped?: number;
+}
+
 export const providersApi = {
   async getAll(appId: AppId): Promise<Record<string, Provider>> {
     return await invoke("get_providers", { app: appId });
@@ -53,6 +63,10 @@ export const providersApi = {
 
   async getCurrent(appId: AppId): Promise<string> {
     return await invoke("get_current_provider", { app: appId });
+  },
+
+  async clearCurrent(appId: AppId): Promise<boolean> {
+    return await invoke("clear_current_provider", { app: appId });
   },
 
   async add(
@@ -105,6 +119,18 @@ export const providersApi = {
 
   async getClaudeDesktopDefaultRoutes(): Promise<ClaudeDesktopDefaultRoute[]> {
     return await invoke("get_claude_desktop_default_routes");
+  },
+
+  async exportClaudeProvidersToFile(
+    filePath: string,
+  ): Promise<ProviderListTransferResult> {
+    return await invoke("export_claude_providers_to_file", { filePath });
+  },
+
+  async importClaudeProvidersFromFile(
+    filePath: string,
+  ): Promise<ProviderListTransferResult> {
+    return await invoke("import_claude_providers_from_file", { filePath });
   },
 
   async updateTrayMenu(): Promise<boolean> {

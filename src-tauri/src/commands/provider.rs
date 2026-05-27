@@ -34,6 +34,14 @@ pub fn get_current_provider(state: State<'_, AppState>, app: String) -> Result<S
 }
 
 #[tauri::command]
+pub fn clear_current_provider(state: State<'_, AppState>, app: String) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    ProviderService::clear_current(state.inner(), app_type)
+        .map(|_| true)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn add_provider(
     state: State<'_, AppState>,
     app: String,

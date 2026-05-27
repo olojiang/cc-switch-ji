@@ -98,6 +98,14 @@ export const settingsApi = {
     return await invoke("open_file_dialog");
   },
 
+  async saveJsonFileDialog(defaultName: string): Promise<string | null> {
+    return await invoke("save_json_file_dialog", { defaultName });
+  },
+
+  async openJsonFileDialog(): Promise<string | null> {
+    return await invoke("open_json_file_dialog");
+  },
+
   async exportConfigToFile(filePath: string): Promise<ConfigTransferResult> {
     return await invoke("export_config_to_file", { filePath });
   },

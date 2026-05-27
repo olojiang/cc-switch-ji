@@ -1,5 +1,13 @@
 import { useMemo, useState, useEffect } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  GripVertical,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   DraggableAttributes,
@@ -7,6 +15,7 @@ import type {
 } from "@dnd-kit/core";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
+import type { StreamCheckResult } from "@/lib/api/model-test";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -52,6 +61,7 @@ interface ProviderCardProps {
   onTest?: (provider: Provider) => void;
   onOpenTerminal?: (provider: Provider) => void;
   isTesting?: boolean;
+  testResult?: StreamCheckResult;
   isProxyRunning: boolean;
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管，切换为热切换）
   dragHandleProps?: DragHandleProps;
@@ -151,6 +161,7 @@ export function ProviderCard({
   onTest,
   onOpenTerminal,
   isTesting,
+  testResult,
   isProxyRunning,
   isProxyTakeover = false,
   dragHandleProps,
@@ -279,6 +290,25 @@ export function ProviderCard({
       !isProxyTakeover &&
       (isActiveProvider || hasPersistentConfigHighlight));
 
+  const testResultTitle = useMemo(() => {
+    if (!testResult) return "";
+    if (testResult.success) {
+      const responseTime =
+        typeof testResult.responseTimeMs === "number"
+          ? ` (${testResult.responseTimeMs}ms)`
+          : "";
+      return t("streamCheck.resultSuccess", {
+        responseTimeMs: testResult.responseTimeMs,
+        defaultValue: `测试成功${responseTime}`,
+      });
+    }
+
+    return t("streamCheck.resultFailed", {
+      message: testResult.message,
+      defaultValue: `测试失败：${testResult.message}`,
+    });
+  }, [t, testResult]);
+
   return (
     <div
       className={cn(
@@ -296,6 +326,33 @@ export function ProviderCard({
           "cursor-grabbing border-primary shadow-lg scale-105 z-10",
       )}
     >
+      {(isTesting || testResult) && (
+        <div
+          className="absolute right-3 top-3 z-20 inline-flex h-5 w-5 items-center justify-center rounded-full bg-background/90 shadow-sm ring-1 ring-border"
+          title={
+            isTesting
+              ? t("streamCheck.testing", { defaultValue: "测试中..." })
+              : testResultTitle
+          }
+          aria-label={
+            isTesting
+              ? t("streamCheck.testing", { defaultValue: "测试中..." })
+              : testResultTitle
+          }
+        >
+          {isTesting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+          ) : testResult?.success ? (
+            testResult.status === "degraded" ? (
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            )
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-red-500" />
+          )}
+        </div>
+      )}
       <div
         className={cn(
           "absolute inset-0 bg-gradient-to-r to-transparent transition-opacity duration-500 pointer-events-none",
@@ -307,7 +364,12 @@ export function ProviderCard({
             : "opacity-0",
         )}
       />
-      <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className={cn(
+          "relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between",
+          (isTesting || testResult) && "pr-7",
+        )}
+      >
         <div className="flex flex-1 items-center gap-2">
           <button
             type="button"

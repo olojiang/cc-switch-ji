@@ -99,6 +99,50 @@ fn redact_url_for_log(url_str: &str) -> String {
     }
 }
 
+const DAILY_LOG_PREFIX: &str = "cc-switch";
+const DAILY_LOG_KEEP_FILES: usize = 7;
+
+fn daily_log_file_name() -> String {
+    format!(
+        "{DAILY_LOG_PREFIX}-{}",
+        chrono::Local::now().format("%Y-%m-%d")
+    )
+}
+
+fn prune_daily_log_files(log_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
+
+    let mut log_files = entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let file_name = path.file_name()?.to_string_lossy();
+            if !file_name.starts_with(&format!("{DAILY_LOG_PREFIX}-"))
+                || !file_name.ends_with(".log")
+            {
+                return None;
+            }
+
+            let date_part = file_name
+                .strip_prefix(&format!("{DAILY_LOG_PREFIX}-"))?
+                .strip_suffix(".log")?;
+            if date_part.len() != 10 {
+                return None;
+            }
+            Some((date_part.to_string(), path))
+        })
+        .collect::<Vec<_>>();
+
+    log_files.sort_by(|a, b| a.0.cmp(&b.0));
+    let drop_count = log_files.len().saturating_sub(DAILY_LOG_KEEP_FILES);
+    for (_, path) in log_files.iter().take(drop_count) {
+        if let Err(err) = std::fs::remove_file(path) {
+            log::warn!("删除旧日志失败 ({}): {err}", path.display());
+        }
+    }
+}
+
 /// 统一处理 ccswitch:// 深链接 URL
 ///
 /// - 解析 URL
@@ -238,6 +282,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
+                let _ = window.maximize();
                 let _ = window.set_focus();
                 #[cfg(target_os = "linux")]
                 {
@@ -250,26 +295,11 @@ pub fn run() {
     let builder = builder
         // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
         .plugin(tauri_plugin_deep_link::init())
-        // 拦截窗口关闭：根据设置决定是否最小化到托盘
+        // 关闭窗口时直接退出，避免后台残留进程
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let settings = crate::settings::get_settings();
-
-                if settings.minimize_to_tray_on_close {
-                    api.prevent_close();
-                    let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = window.set_skip_taskbar(true);
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        tray::apply_tray_policy(window.app_handle(), false);
-                    }
-                } else {
-                    api.prevent_close();
-                    window.app_handle().exit(0);
-                }
+                api.prevent_close();
+                window.app_handle().exit(0);
             }
         })
         .plugin(tauri_plugin_process::init())
@@ -299,20 +329,20 @@ pub fn run() {
                     log::warn!("初始化 Updater 插件失败，已跳过：{e}");
                 }
             }
-            // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
+            // 初始化日志（按天日志文件，最多保留 7 份）
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
                 let log_dir = panic_hook::get_log_dir();
+                let daily_log_name = daily_log_file_name();
 
                 // 确保日志目录存在
                 if let Err(e) = std::fs::create_dir_all(&log_dir) {
                     eprintln!("创建日志目录失败: {e}");
                 }
 
-                // 启动时删除旧日志文件，实现单文件覆盖效果
-                let log_file_path = log_dir.join("cc-switch.log");
-                let _ = std::fs::remove_file(&log_file_path);
+                // 保留最近 7 天日志，防止日志无限增长
+                prune_daily_log_files(&log_dir);
 
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -322,14 +352,12 @@ pub fn run() {
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
                                 path: log_dir,
-                                file_name: Some("cc-switch".into()),
+                                file_name: Some(daily_log_name.into()),
                             }),
                         ])
-                        // 单文件模式：启动时删除旧文件，达到大小时轮转
-                        // 注意：KeepSome(n) 内部会做 n-2 运算，n=1 会导致 usize 下溢
-                        // KeepSome(2) 是最小安全值，表示不保留轮转文件
-                        .rotation_strategy(RotationStrategy::KeepSome(2))
-                        // 单文件大小限制 1GB
+                        // 使用单活动文件写入，文件名按日期区分。
+                        .rotation_strategy(RotationStrategy::KeepOne)
+                        // 单文件大小限制 1GB（超限后重建当天文件）
                         .max_file_size(1024 * 1024 * 1024)
                         .timezone_strategy(TimezoneStrategy::UseLocal)
                         .build(),
@@ -795,7 +823,7 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
+                .tooltip("CC Switch 纪") // 鼠标悬停提示
                 .on_tray_icon_event(|tray, event| match event {
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
@@ -1036,33 +1064,27 @@ pub fn run() {
                 }
             }
 
-            // 静默启动：根据设置决定是否显示主窗口
-            let settings = crate::settings::get_settings();
+            // 启动时始终显示并最大化主窗口
+            #[cfg(target_os = "linux")]
+            let use_app_window_controls = crate::settings::get_settings().use_app_window_controls;
             if let Some(window) = app.get_webview_window("main") {
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
-                let _ = window.set_decorations(!settings.use_app_window_controls);
-                if settings.silent_startup {
-                    // 静默启动模式：保持窗口隐藏
-                    let _ = window.hide();
-                    #[cfg(target_os = "windows")]
-                    let _ = window.set_skip_taskbar(true);
-                    #[cfg(target_os = "macos")]
-                    tray::apply_tray_policy(app.handle(), false);
-                    log::info!("静默启动模式：主窗口已隐藏");
-                } else {
-                    // 正常启动模式：显示窗口
-                    let _ = window.show();
-                    log::info!("正常启动模式：主窗口已显示");
+                let _ = window.set_decorations(!use_app_window_controls);
 
-                    // Linux: 解决首次启动 UI 无响应问题（Tauri #10746 + wry #637）。
-                    // 启动时 webview 未获取焦点 + surface 尺寸协商失败，导致点击无效。
-                    // 这里做 set_focus + 伪 resize，等价于无视觉版本的"最大化-还原"。
-                    #[cfg(target_os = "linux")]
-                    {
-                        linux_fix::nudge_main_window(window.clone());
-                    }
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.maximize();
+                let _ = window.set_focus();
+                log::info!("启动时主窗口已显示并最大化");
+
+                // Linux: 解决首次启动 UI 无响应问题（Tauri #10746 + wry #637）。
+                // 启动时 webview 未获取焦点 + surface 尺寸协商失败，导致点击无效。
+                // 这里做 set_focus + 伪 resize，等价于无视觉版本的"最大化-还原"。
+                #[cfg(target_os = "linux")]
+                {
+                    linux_fix::nudge_main_window(window.clone());
                 }
             }
 
@@ -1072,6 +1094,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_providers,
             commands::get_current_provider,
+            commands::clear_current_provider,
             commands::add_provider,
             commands::update_provider,
             commands::delete_provider,
@@ -1168,6 +1191,8 @@ pub fn run() {
             // theirs: config import/export and dialogs
             commands::export_config_to_file,
             commands::import_config_from_file,
+            commands::export_claude_providers_to_file,
+            commands::import_claude_providers_from_file,
             commands::webdav_test_connection,
             commands::webdav_sync_upload,
             commands::webdav_sync_download,
@@ -1175,6 +1200,8 @@ pub fn run() {
             commands::webdav_sync_fetch_remote_info,
             commands::save_file_dialog,
             commands::open_file_dialog,
+            commands::save_json_file_dialog,
+            commands::open_json_file_dialog,
             commands::open_zip_file_dialog,
             commands::create_db_backup,
             commands::list_db_backups,
@@ -1383,17 +1410,7 @@ pub fn run() {
     app.run(|app_handle, event| {
         // 处理退出请求（所有平台）
         if let RunEvent::ExitRequested { api, code, .. } = &event {
-            // code 为 None 表示运行时自动触发（如隐藏窗口的 WebView 被回收导致无存活窗口），
-            // 此时应仅阻止退出、保持托盘后台运行；
-            // code 为 Some(_) 表示用户主动调用 app.exit() 退出（如托盘菜单"退出"），
-            // 此时执行清理后退出。
-            if code.is_none() {
-                log::info!("运行时触发退出请求（无存活窗口），阻止退出以保持托盘后台运行");
-                api.prevent_exit();
-                return;
-            }
-
-            log::info!("收到用户主动退出请求 (code={code:?})，开始清理...");
+            log::info!("收到退出请求 (code={code:?})，开始清理...");
             api.prevent_exit();
 
             let app_handle = app_handle.clone();
@@ -1423,6 +1440,7 @@ pub fn run() {
                         }
                         let _ = window.unminimize();
                         let _ = window.show();
+                        let _ = window.maximize();
                         let _ = window.set_focus();
                         tray::apply_tray_policy(app_handle, true);
                     } else if crate::lightweight::is_lightweight_mode() {
@@ -1485,6 +1503,7 @@ pub fn run() {
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 let _ = window.unminimize();
                                 let _ = window.show();
+                                let _ = window.maximize();
                                 let _ = window.set_focus();
                             }
                         }
