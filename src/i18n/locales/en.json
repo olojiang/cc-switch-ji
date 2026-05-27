@@ -2369,6 +2369,7 @@
   "streamCheck": {
     "configSaved": "Health check config saved",
     "configSaveFailed": "Save failed",
+    "testAll": "Test All",
     "testModels": "Test Models",
     "claudeModel": "Claude Model",
     "codexModel": "Codex Model",

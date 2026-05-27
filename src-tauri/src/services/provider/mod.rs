@@ -31,8 +31,9 @@ pub use live::{
 pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
-    provider_exists_in_live_config, strip_common_config_from_live_settings,
-    sync_current_provider_for_app_to_live, write_live_with_common_config,
+    provider_exists_in_live_config, remove_provider_settings_from_live,
+    strip_common_config_from_live_settings, sync_current_provider_for_app_to_live,
+    write_live_with_common_config,
 };
 
 // Internal re-exports
@@ -346,6 +347,76 @@ mod tests {
             ProviderService::extract_credentials(&provider, &AppType::Claude).unwrap();
         assert_eq!(api_key, "token");
         assert_eq!(base_url, "https://claude.example");
+    }
+
+    #[test]
+    #[serial]
+    fn clear_current_claude_provider_removes_provider_env_from_live_settings() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let provider = Provider::with_id(
+            "p1".into(),
+            "Claude A".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://api.a.example",
+                    "ANTHROPIC_MODEL": "model-a"
+                },
+                "permissions": { "allow": ["Bash"] }
+            }),
+            None,
+        );
+
+        db.save_provider("claude", &provider)
+            .expect("save provider");
+        db.set_current_provider("claude", "p1")
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Claude, Some("p1"))
+            .expect("set local current provider");
+
+        write_json_file(
+            &get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-a",
+                    "ANTHROPIC_BASE_URL": "https://api.a.example",
+                    "ANTHROPIC_MODEL": "model-a",
+                    "UNRELATED_ENV": "keep"
+                },
+                "permissions": { "allow": ["Bash"] },
+                "statusLine": { "type": "command", "command": "keep" }
+            }),
+        )
+        .expect("seed live settings");
+
+        ProviderService::clear_current(&state, AppType::Claude).expect("clear current provider");
+
+        assert_eq!(
+            ProviderService::current(&state, AppType::Claude).expect("read current provider"),
+            ""
+        );
+        let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+        assert_eq!(
+            live.get("env")
+                .and_then(|env| env.get("UNRELATED_ENV"))
+                .and_then(Value::as_str),
+            Some("keep")
+        );
+        assert!(live
+            .get("env")
+            .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN"))
+            .is_none());
+        assert!(live.get("permissions").is_none());
+        assert_eq!(
+            live.get("statusLine")
+                .and_then(|status| status.get("command"))
+                .and_then(Value::as_str),
+            Some("keep")
+        );
     }
 
     #[test]
@@ -1188,6 +1259,16 @@ impl ProviderService {
                 "App {} does not support clearing current provider",
                 app_type.as_str()
             )));
+        }
+
+        let current_id = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+        if let Some(current_id) = current_id {
+            if let Some(provider) = state
+                .db
+                .get_provider_by_id(&current_id, app_type.as_str())?
+            {
+                remove_provider_settings_from_live(&app_type, &provider)?;
+            }
         }
 
         crate::settings::set_current_provider(&app_type, None)?;

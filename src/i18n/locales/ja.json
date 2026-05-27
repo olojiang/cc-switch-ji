@@ -2369,6 +2369,7 @@
   "streamCheck": {
     "configSaved": "ヘルスチェック設定を保存しました",
     "configSaveFailed": "保存に失敗しました",
+    "testAll": "すべてテスト",
     "testModels": "テストモデル",
     "claudeModel": "Claude モデル",
     "codexModel": "Codex モデル",

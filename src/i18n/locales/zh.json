@@ -2369,6 +2369,7 @@
   "streamCheck": {
     "configSaved": "健康检查配置已保存",
     "configSaveFailed": "保存失败",
+    "testAll": "测试所有",
     "testModels": "测试模型",
     "claudeModel": "Claude 模型",
     "codexModel": "Codex 模型",

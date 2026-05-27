@@ -206,9 +206,20 @@ fn codex_model_provider_id_with_table_from_config(
     Ok(has_provider_table.then_some(provider_id))
 }
 
-fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<String, AppError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexLiveConfigNormalization {
+    config_text: String,
+    rewritten_provider: Option<(String, String)>,
+}
+
+fn normalize_codex_live_config_model_provider_with_rewrite(
+    config_text: &str,
+) -> Result<CodexLiveConfigNormalization, AppError> {
     if config_text.trim().is_empty() {
-        return Ok(config_text.to_string());
+        return Ok(CodexLiveConfigNormalization {
+            config_text: config_text.to_string(),
+            rewritten_provider: None,
+        });
     }
 
     let mut doc = config_text
@@ -216,7 +227,10 @@ fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<Strin
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
     let Some(source_provider_id) = active_codex_model_provider_id(&doc) else {
-        return Ok(config_text.to_string());
+        return Ok(CodexLiveConfigNormalization {
+            config_text: config_text.to_string(),
+            rewritten_provider: None,
+        });
     };
 
     let has_source_provider_table = doc
@@ -225,16 +239,25 @@ fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<Strin
         .and_then(|table| table.get(source_provider_id.as_str()))
         .is_some();
     if !has_source_provider_table {
-        return Ok(config_text.to_string());
+        return Ok(CodexLiveConfigNormalization {
+            config_text: config_text.to_string(),
+            rewritten_provider: None,
+        });
     }
     if !is_custom_codex_model_provider_id(&source_provider_id) {
-        return Ok(config_text.to_string());
+        return Ok(CodexLiveConfigNormalization {
+            config_text: config_text.to_string(),
+            rewritten_provider: None,
+        });
     }
 
     let stable_provider_id = CC_SWITCH_CODEX_MODEL_PROVIDER_ID.to_string();
 
     if stable_provider_id == source_provider_id {
-        return Ok(config_text.to_string());
+        return Ok(CodexLiveConfigNormalization {
+            config_text: config_text.to_string(),
+            rewritten_provider: None,
+        });
     }
 
     if let Some(model_providers) = doc
@@ -242,7 +265,10 @@ fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<Strin
         .and_then(|item| item.as_table_mut())
     {
         let Some(provider_table) = model_providers.remove(source_provider_id.as_str()) else {
-            return Ok(config_text.to_string());
+            return Ok(CodexLiveConfigNormalization {
+                config_text: config_text.to_string(),
+                rewritten_provider: None,
+            });
         };
         model_providers[stable_provider_id.as_str()] = provider_table;
     }
@@ -250,7 +276,14 @@ fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<Strin
     rewrite_codex_profile_model_provider_refs(&mut doc, &source_provider_id, &stable_provider_id);
     doc["model_provider"] = toml_edit::value(stable_provider_id.as_str());
 
-    Ok(doc.to_string())
+    Ok(CodexLiveConfigNormalization {
+        config_text: doc.to_string(),
+        rewritten_provider: Some((source_provider_id, stable_provider_id)),
+    })
+}
+
+fn normalize_codex_live_config_model_provider(config_text: &str) -> Result<String, AppError> {
+    Ok(normalize_codex_live_config_model_provider_with_rewrite(config_text)?.config_text)
 }
 
 fn rewrite_codex_profile_model_provider_refs(
@@ -391,23 +424,222 @@ pub fn write_codex_live_atomic_with_stable_provider(
 ) -> Result<(), AppError> {
     match config_text_opt {
         Some(config_text) => {
-            let config_text = normalize_codex_config_for_live_provider(config_text)?;
-            write_codex_live_atomic(auth, Some(&config_text))
+            let normalized = normalize_codex_config_for_live_provider_with_rewrite(config_text)?;
+            write_codex_live_atomic(auth, Some(&normalized.config_text))?;
+            sync_rewritten_codex_profile_refs(
+                &normalized.config_text,
+                normalized.rewritten_provider,
+            );
+            Ok(())
         }
         None => write_codex_live_atomic(auth, None),
     }
 }
 
-fn normalize_codex_config_for_live_provider(config_text: &str) -> Result<String, AppError> {
-    let mut settings = serde_json::Map::new();
-    settings.insert("config".to_string(), Value::String(config_text.to_string()));
-    let mut settings = Value::Object(settings);
-    normalize_codex_settings_config_model_provider(&mut settings)?;
-    Ok(settings
-        .get("config")
-        .and_then(|value| value.as_str())
-        .unwrap_or(config_text)
-        .to_string())
+fn normalize_codex_config_for_live_provider_with_rewrite(
+    config_text: &str,
+) -> Result<CodexLiveConfigNormalization, AppError> {
+    normalize_codex_live_config_model_provider_with_rewrite(config_text)
+}
+
+fn codex_doc_has_model_provider_table(doc: &DocumentMut, provider_id: &str) -> bool {
+    doc.get("model_providers")
+        .and_then(|item| item.as_table())
+        .and_then(|table| table.get(provider_id))
+        .is_some()
+}
+
+fn codex_doc_model_provider_ids(doc: &DocumentMut) -> std::collections::HashSet<String> {
+    doc.get("model_providers")
+        .and_then(|item| item.as_table())
+        .map(|table| table.iter().map(|(key, _)| key.to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn replacement_for_codex_profile_provider_ref(
+    profile_doc: &DocumentMut,
+    provider_id: &str,
+    live_provider_ids: &std::collections::HashSet<String>,
+    active_live_provider_id: Option<&str>,
+    rewritten_provider: Option<(&str, &str)>,
+) -> Option<String> {
+    if codex_doc_has_model_provider_table(profile_doc, provider_id) {
+        return None;
+    }
+    if live_provider_ids.contains(provider_id) || !is_custom_codex_model_provider_id(provider_id) {
+        return None;
+    }
+
+    if let Some((source_provider_id, stable_provider_id)) = rewritten_provider {
+        if provider_id == source_provider_id {
+            return Some(stable_provider_id.to_string());
+        }
+    }
+
+    active_live_provider_id
+        .filter(|active| {
+            is_custom_codex_model_provider_id(active) && live_provider_ids.contains(*active)
+        })
+        .map(str::to_string)
+}
+
+fn rewrite_codex_profile_file_model_provider_refs(
+    doc: &mut DocumentMut,
+    live_provider_ids: &std::collections::HashSet<String>,
+    active_live_provider_id: Option<&str>,
+    rewritten_provider: Option<(&str, &str)>,
+) -> bool {
+    let original = doc.to_string();
+
+    if let Some(provider_id) = active_codex_model_provider_id(doc) {
+        if let Some(replacement) = replacement_for_codex_profile_provider_ref(
+            doc,
+            &provider_id,
+            live_provider_ids,
+            active_live_provider_id,
+            rewritten_provider,
+        ) {
+            doc["model_provider"] = toml_edit::value(replacement);
+        }
+    }
+
+    let profile_rewrites: Vec<(String, String)> = doc
+        .get("profiles")
+        .and_then(|item| item.as_table_like())
+        .map(|profiles| {
+            profiles
+                .iter()
+                .filter_map(|(profile_key, item)| {
+                    let provider_id = item
+                        .as_table_like()
+                        .and_then(|profile_table| profile_table.get("model_provider"))
+                        .and_then(|item| item.as_str())?;
+                    let replacement = replacement_for_codex_profile_provider_ref(
+                        doc,
+                        provider_id,
+                        live_provider_ids,
+                        active_live_provider_id,
+                        rewritten_provider,
+                    )?;
+                    Some((profile_key.to_string(), replacement))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(profiles) = doc
+        .get_mut("profiles")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for (profile_key, replacement) in profile_rewrites {
+            if let Some(profile_table) = profiles
+                .get_mut(&profile_key)
+                .and_then(|item| item.as_table_like_mut())
+            {
+                profile_table.insert("model_provider", toml_edit::value(replacement));
+            }
+        }
+    }
+
+    doc.to_string() != original
+}
+
+fn sync_codex_profile_config_model_provider_refs(
+    live_config_text: &str,
+    rewritten_provider: Option<(&str, &str)>,
+) -> Result<usize, AppError> {
+    let live_doc = if live_config_text.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        live_config_text
+            .parse::<DocumentMut>()
+            .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?
+    };
+    let live_provider_ids = codex_doc_model_provider_ids(&live_doc);
+    let active_live_provider_id = active_codex_model_provider_id(&live_doc);
+
+    let config_dir = get_codex_config_dir();
+    if !config_dir.exists() {
+        return Ok(0);
+    }
+
+    let entries = fs::read_dir(&config_dir).map_err(|e| AppError::io(&config_dir, e))?;
+    let mut updated = 0usize;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read Codex config directory entry in {}: {err}",
+                    config_dir.display()
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name == "config.toml" || !file_name.ends_with(".config.toml") {
+            continue;
+        }
+
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read Codex profile config {}: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        if text.trim().is_empty() || !text.contains("model_provider") {
+            continue;
+        }
+
+        let mut doc = match text.parse::<DocumentMut>() {
+            Ok(doc) => doc,
+            Err(err) => {
+                log::warn!(
+                    "Skipping invalid Codex profile config {} while syncing model_provider refs: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        if rewrite_codex_profile_file_model_provider_refs(
+            &mut doc,
+            &live_provider_ids,
+            active_live_provider_id.as_deref(),
+            rewritten_provider,
+        ) {
+            write_text_file(&path, &doc.to_string())?;
+            updated += 1;
+        }
+    }
+
+    Ok(updated)
+}
+
+fn sync_rewritten_codex_profile_refs(
+    live_config_text: &str,
+    rewritten_provider: Option<(String, String)>,
+) {
+    let rewritten_provider_ref = rewritten_provider
+        .as_ref()
+        .map(|(source, target)| (source.as_str(), target.as_str()));
+    match sync_codex_profile_config_model_provider_refs(live_config_text, rewritten_provider_ref) {
+        Ok(updated) if updated > 0 => {
+            log::info!("Updated {updated} Codex profile config file model_provider reference(s)");
+        }
+        Ok(_) => {}
+        Err(err) => {
+            log::warn!("Failed to sync Codex profile config model_provider refs: {err}");
+        }
+    }
 }
 
 /// Write only Codex `config.toml` for provider switching.
@@ -419,16 +651,21 @@ pub fn write_codex_live_config_atomic_with_stable_provider(
     config_text_opt: Option<&str>,
 ) -> Result<(), AppError> {
     let config_path = get_codex_config_path();
-    let cfg_text = match config_text_opt {
-        Some(config_text) => normalize_codex_config_for_live_provider(config_text)?,
-        None => String::new(),
+    let (cfg_text, rewritten_provider) = match config_text_opt {
+        Some(config_text) => {
+            let normalized = normalize_codex_config_for_live_provider_with_rewrite(config_text)?;
+            (normalized.config_text, normalized.rewritten_provider)
+        }
+        None => (String::new(), None),
     };
 
     if !cfg_text.trim().is_empty() {
         toml::from_str::<toml::Table>(&cfg_text).map_err(|e| AppError::toml(&config_path, e))?;
     }
 
-    write_text_file(&config_path, &cfg_text)
+    write_text_file(&config_path, &cfg_text)?;
+    sync_rewritten_codex_profile_refs(&cfg_text, rewritten_provider);
+    Ok(())
 }
 
 pub fn extract_codex_auth_api_key(auth: &Value) -> Option<String> {
@@ -1236,6 +1473,8 @@ pub fn remove_codex_toml_base_url_if(toml_str: &str, predicate: impl Fn(&str) ->
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
+    use std::env;
 
     #[test]
     fn normalize_live_config_uses_custom_for_third_party_model_provider_id() {
@@ -1530,6 +1769,134 @@ wire_api = "responses"
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
             Some("https://beta.example/v1")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn write_live_config_rewrites_external_profile_provider_refs() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let old_test_home = env::var_os("CC_SWITCH_TEST_HOME");
+        let old_home = env::var_os("HOME");
+        env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        env::set_var("HOME", temp.path());
+
+        let codex_dir = temp.path().join(".codex");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        let profile_path = codex_dir.join("azure54.config.toml");
+        write_text_file(
+            &profile_path,
+            r#"model_provider = "azure"
+model = "gpt-5.4"
+"#,
+        )
+        .expect("write profile");
+        let self_contained_path = codex_dir.join("self-contained.config.toml");
+        write_text_file(
+            &self_contained_path,
+            r#"model_provider = "azure"
+
+[model_providers.azure]
+name = "Azure"
+base_url = "https://azure.example/openai"
+"#,
+        )
+        .expect("write self-contained profile");
+
+        let live_config = r#"model_provider = "azure"
+model = "gpt-5.5"
+
+[model_providers.azure]
+name = "Azure OpenAI"
+base_url = "https://azure.example/openai"
+wire_api = "responses"
+"#;
+
+        let result = write_codex_live_config_atomic_with_stable_provider(Some(live_config));
+
+        match old_test_home {
+            Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        match old_home {
+            Some(value) => env::set_var("HOME", value),
+            None => env::remove_var("HOME"),
+        }
+
+        result.expect("write live config");
+
+        let profile_text = fs::read_to_string(&profile_path).expect("read profile");
+        assert!(
+            profile_text.contains("model_provider = \"custom\""),
+            "external profile should reference stable provider: {profile_text}"
+        );
+        let self_contained_text =
+            fs::read_to_string(&self_contained_path).expect("read self-contained profile");
+        assert!(
+            self_contained_text.contains("model_provider = \"azure\""),
+            "self-contained profile should keep its own provider id"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn write_live_config_repairs_dangling_custom_profile_refs_when_live_is_already_stable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let old_test_home = env::var_os("CC_SWITCH_TEST_HOME");
+        let old_home = env::var_os("HOME");
+        env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        env::set_var("HOME", temp.path());
+
+        let codex_dir = temp.path().join(".codex");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        let dangling_path = codex_dir.join("azure54.config.toml");
+        write_text_file(
+            &dangling_path,
+            r#"model_provider = "azure"
+model = "gpt-5.4"
+"#,
+        )
+        .expect("write dangling profile");
+        let reserved_path = codex_dir.join("openai.config.toml");
+        write_text_file(
+            &reserved_path,
+            r#"model_provider = "openai"
+model = "gpt-5"
+"#,
+        )
+        .expect("write reserved profile");
+
+        let live_config = r#"model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.custom]
+name = "Azure OpenAI"
+base_url = "https://azure.example/openai"
+wire_api = "responses"
+"#;
+
+        let result = write_codex_live_config_atomic_with_stable_provider(Some(live_config));
+
+        match old_test_home {
+            Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        match old_home {
+            Some(value) => env::set_var("HOME", value),
+            None => env::remove_var("HOME"),
+        }
+
+        result.expect("write live config");
+
+        let dangling_text = fs::read_to_string(&dangling_path).expect("read dangling profile");
+        assert!(
+            dangling_text.contains("model_provider = \"custom\""),
+            "dangling custom provider refs should be repaired: {dangling_text}"
+        );
+        let reserved_text = fs::read_to_string(&reserved_path).expect("read reserved profile");
+        assert!(
+            reserved_text.contains("model_provider = \"openai\""),
+            "reserved Codex provider refs should remain untouched"
         );
     }
 

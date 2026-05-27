@@ -570,6 +570,25 @@ pub(crate) fn strip_common_config_from_live_settings(
     restore_live_settings_for_provider_backfill(app_type, provider, backfill_settings)
 }
 
+pub(crate) fn remove_provider_settings_from_live(
+    app_type: &AppType,
+    provider: &Provider,
+) -> Result<(), AppError> {
+    if !matches!(app_type, AppType::Claude) {
+        return Ok(());
+    }
+
+    let path = get_claude_settings_path();
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let mut live_settings = read_json_file::<Value>(&path)?;
+    let provider_settings = sanitize_claude_settings_for_live(&provider.settings_config);
+    json_deep_remove(&mut live_settings, &provider_settings);
+    write_json_file(&path, &live_settings)
+}
+
 fn restore_live_settings_for_provider_backfill(
     app_type: &AppType,
     provider: &Provider,
