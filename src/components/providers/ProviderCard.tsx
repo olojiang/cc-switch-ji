@@ -18,6 +18,7 @@ import type { AppId } from "@/lib/api";
 import type { StreamCheckResult } from "@/lib/api/model-test";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
+import { ProviderExportsDialog } from "@/components/providers/ProviderExportsDialog";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import UsageFooter from "@/components/UsageFooter";
 import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
@@ -33,6 +34,7 @@ import {
   extractCodexWireApi,
   isCodexChatWireApi,
 } from "@/utils/providerConfigUtils";
+import { buildProviderExports } from "@/utils/providerExportUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 
@@ -252,6 +254,12 @@ export function ProviderCard({
     usage?.success && usage.data && usage.data.length > 1 && !isTokenPlan;
 
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isExportsOpen, setIsExportsOpen] = useState(false);
+
+  const exportsText = useMemo(
+    () => buildProviderExports(provider, appId),
+    [provider, appId],
+  );
 
   useEffect(() => {
     if (hasMultiplePlans) {
@@ -605,6 +613,7 @@ export function ProviderCard({
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
+              onViewExports={() => setIsExportsOpen(true)}
               onTest={
                 onTest &&
                 !isOfficial &&
@@ -653,6 +662,13 @@ export function ProviderCard({
           />
         </div>
       )}
+
+      <ProviderExportsDialog
+        provider={provider}
+        exportsText={exportsText}
+        open={isExportsOpen}
+        onOpenChange={setIsExportsOpen}
+      />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import {
   Check,
   Copy,
   Edit,
+  FileCode2,
   Loader2,
   Minus,
   Play,
@@ -28,6 +29,7 @@ interface ProviderActionsProps {
   onSwitch: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
+  onViewExports?: () => void;
   onTest?: () => void;
   onConfigureUsage?: () => void;
   onDelete: () => void;
@@ -55,6 +57,7 @@ export function ProviderActions({
   onSwitch,
   onEdit,
   onDuplicate,
+  onViewExports,
   onTest,
   onConfigureUsage,
   onDelete,
@@ -282,6 +285,18 @@ export function ProviderActions({
         >
           <Copy className="h-4 w-4" />
         </Button>
+
+        {onViewExports && (
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onViewExports}
+            title={t("providerExports.view", { defaultValue: "查看 exports" })}
+            className={iconButtonClass}
+          >
+            <FileCode2 className="h-4 w-4" />
+          </Button>
+        )}
 
         <Button
           size="icon"

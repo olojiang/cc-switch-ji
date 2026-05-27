@@ -255,6 +255,8 @@ export const handlers = [
     return success(app === "claude" ? "/default/claude" : "/default/codex");
   }),
 
+  http.post(`${TAURI_ENDPOINT}/reveal_config_file`, () => success(true)),
+
   http.post(`${TAURI_ENDPOINT}/is_portable_mode`, () => success(false)),
 
   http.post(

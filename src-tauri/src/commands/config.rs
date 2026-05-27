@@ -177,6 +177,55 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
     Ok(true)
 }
 
+fn config_file_path_for_app(app: AppType) -> Result<std::path::PathBuf, String> {
+    match app {
+        AppType::Claude => Ok(config::get_claude_settings_path()),
+        AppType::ClaudeDesktop => Ok(crate::claude_desktop_config::get_config_library_path()
+            .map_err(|e| e.to_string())?
+            .join("claude_desktop_config.json")),
+        AppType::Codex => Ok(codex_config::get_codex_config_path()),
+        AppType::Gemini => Ok(crate::gemini_config::get_gemini_settings_path()),
+        AppType::OpenCode => Ok(crate::opencode_config::get_opencode_config_path()),
+        AppType::OpenClaw => Ok(crate::openclaw_config::get_openclaw_config_path()),
+        AppType::Hermes => Ok(crate::hermes_config::get_hermes_config_path()),
+    }
+}
+
+#[tauri::command]
+pub async fn reveal_config_file(handle: AppHandle, app: String) -> Result<bool, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let config_file = config_file_path_for_app(app_type)?;
+    let config_dir = config_file
+        .parent()
+        .ok_or_else(|| "配置文件路径无效".to_string())?;
+
+    if !config_dir.exists() {
+        std::fs::create_dir_all(config_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if config_file.exists() {
+            let status = std::process::Command::new("open")
+                .arg("-R")
+                .arg(&config_file)
+                .status()
+                .map_err(|e| format!("打开 Finder 失败: {e}"))?;
+
+            if status.success() {
+                return Ok(true);
+            }
+        }
+    }
+
+    handle
+        .opener()
+        .open_path(config_dir.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| format!("打开文件夹失败: {e}"))?;
+
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn pick_directory(
     app: AppHandle,

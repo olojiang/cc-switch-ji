@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  FolderSearch,
   Loader2,
   RotateCcw,
   Search,
@@ -495,6 +496,21 @@ export function ProviderList({
     }
   }, [appId, currentProviderId, queryClient, t]);
 
+  const handleRevealClaudeConfig = useCallback(async () => {
+    if (appId !== "claude") return;
+
+    try {
+      await settingsApi.revealConfigFile(appId);
+    } catch (error) {
+      toast.error(
+        t("provider.findConfigFailed", {
+          defaultValue: "打开 Claude 配置位置失败：{{message}}",
+          message: error instanceof Error ? error.message : String(error ?? ""),
+        }),
+      );
+    }
+  }, [appId, t]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -712,6 +728,20 @@ export function ProviderList({
   return (
     <div className="mt-4 space-y-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
+        {appId === "claude" && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleRevealClaudeConfig}
+            className="mr-auto"
+          >
+            <FolderSearch className="mr-2 h-4 w-4" />
+            {t("provider.findConfig", {
+              defaultValue: "Find Configure",
+            })}
+          </Button>
+        )}
         {testSummary && (
           <div
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 text-xs text-muted-foreground"
