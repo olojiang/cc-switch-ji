@@ -59,7 +59,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
 import {
-  streamCheckAllProviders,
+  streamCheckProvider,
   type StreamCheckResult,
 } from "@/lib/api/model-test";
 
@@ -213,6 +213,7 @@ export function ProviderList({
     useState<Provider | null>(null);
   const [pendingTestAll, setPendingTestAll] = useState(false);
   const [isTestingAll, setIsTestingAll] = useState(false);
+  const [testingAllIds, setTestingAllIds] = useState<Set<string>>(new Set());
   const [testResults, setTestResults] = useState<
     Record<string, StreamCheckResult>
   >({});
@@ -254,24 +255,52 @@ export function ProviderList({
   const runTestAll = useCallback(async () => {
     if (isTestingAll) return;
 
+    const providersToTest = sortedProviders;
+    if (providersToTest.length === 0) return;
+
     setIsTestingAll(true);
+    setTestingAllIds(new Set(providersToTest.map((provider) => provider.id)));
+
+    const completedResults: Array<[string, StreamCheckResult]> = [];
     try {
-      const results = await streamCheckAllProviders(appId);
-      const nextResults: Record<string, StreamCheckResult> = {};
-      for (const [providerId, result] of results) {
-        nextResults[providerId] = result;
-      }
+      await Promise.all(
+        providersToTest.map(async (provider) => {
+          let result: StreamCheckResult;
 
-      setTestResults((prev) => ({ ...prev, ...nextResults }));
+          try {
+            result = await streamCheckProvider(appId, provider.id);
+          } catch (error) {
+            result = {
+              status: "failed",
+              success: false,
+              message:
+                error instanceof Error ? error.message : String(error ?? ""),
+              modelUsed: "",
+              testedAt: Date.now(),
+              retryCount: 0,
+            };
+          }
 
-      const passed = results.filter(([, result]) => result.success).length;
-      const failed = results.length - passed;
+          completedResults.push([provider.id, result]);
+          setTestResults((prev) => ({ ...prev, [provider.id]: result }));
+          setTestingAllIds((prev) => {
+            const next = new Set(prev);
+            next.delete(provider.id);
+            return next;
+          });
+        }),
+      );
+
+      const passed = completedResults.filter(
+        ([, result]) => result.success,
+      ).length;
+      const failed = completedResults.length - passed;
       if (failed === 0) {
         toast.success(
           t("streamCheck.allPassed", {
             passed,
-            total: results.length,
-            defaultValue: `全部测试通过 (${passed}/${results.length})`,
+            total: completedResults.length,
+            defaultValue: `全部测试通过 (${passed}/${completedResults.length})`,
           }),
         );
       } else {
@@ -279,7 +308,7 @@ export function ProviderList({
           t("streamCheck.allFinishedWithFailures", {
             passed,
             failed,
-            total: results.length,
+            total: completedResults.length,
             defaultValue: `测试完成：${passed} 个成功，${failed} 个失败`,
           }),
           { closeButton: true },
@@ -294,8 +323,9 @@ export function ProviderList({
       );
     } finally {
       setIsTestingAll(false);
+      setTestingAllIds(new Set());
     }
-  }, [appId, isTestingAll, t]);
+  }, [appId, isTestingAll, sortedProviders, t]);
 
   const handleTestAll = useCallback(() => {
     if (!settings?.streamCheckConfirmed) {
@@ -649,7 +679,9 @@ export function ProviderList({
                 onOpenWebsite={onOpenWebsite}
                 onOpenTerminal={onOpenTerminal}
                 onTest={handleTest}
-                isTesting={isChecking(provider.id) || isTestingAll}
+                isTesting={
+                  isChecking(provider.id) || testingAllIds.has(provider.id)
+                }
                 testResult={testResults[provider.id]}
                 isProxyRunning={isProxyRunning}
                 isProxyTakeover={isProxyTakeover}

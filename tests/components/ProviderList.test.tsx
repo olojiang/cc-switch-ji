@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactElement } from "react";
@@ -8,6 +8,7 @@ import { ProviderList } from "@/components/providers/ProviderList";
 const useDragSortMock = vi.fn();
 const useSortableMock = vi.fn();
 const providerCardRenderSpy = vi.fn();
+const streamCheckProviderMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/useDragSort", () => ({
   useDragSort: (...args: unknown[]) => useDragSortMock(...args),
@@ -63,6 +64,12 @@ vi.mock("@/components/providers/ProviderCard", () => ({
         <span data-testid={`drag-attr-${provider.id}`}>
           {props.dragHandleProps?.attributes?.["data-dnd-id"] ?? "none"}
         </span>
+        <span data-testid={`is-testing-${provider.id}`}>
+          {props.isTesting ? "testing" : "idle"}
+        </span>
+        <span data-testid={`test-result-${provider.id}`}>
+          {props.testResult?.responseTimeMs ?? ""}
+        </span>
       </div>
     );
   },
@@ -87,6 +94,10 @@ vi.mock("@/hooks/useStreamCheck", () => ({
     checkProvider: vi.fn(),
     isChecking: () => false,
   }),
+}));
+
+vi.mock("@/lib/api/model-test", () => ({
+  streamCheckProvider: (...args: unknown[]) => streamCheckProviderMock(...args),
 }));
 
 vi.mock("@/lib/query/failover", () => ({
@@ -124,6 +135,7 @@ beforeEach(() => {
   useDragSortMock.mockReset();
   useSortableMock.mockReset();
   providerCardRenderSpy.mockClear();
+  streamCheckProviderMock.mockReset();
 
   useSortableMock.mockImplementation(({ id }: { id: string }) => ({
     setNodeRef: vi.fn(),
@@ -235,12 +247,12 @@ describe("ProviderList Component", () => {
     // Drag attributes from useSortable
     expect(
       providerCardRenderSpy.mock.calls[0][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("b");
     expect(
       providerCardRenderSpy.mock.calls[1][0].dragHandleProps?.attributes[
-      "data-dnd-id"
+        "data-dnd-id"
       ],
     ).toBe("a");
 
@@ -305,5 +317,89 @@ describe("ProviderList Component", () => {
     expect(
       screen.getByText("No providers match your search."),
     ).toBeInTheDocument();
+  });
+
+  it("updates batch test results as each provider completes", async () => {
+    const providerA = createProvider({ id: "a", name: "A" });
+    const providerB = createProvider({ id: "b", name: "B" });
+    let resolveA!: (value: unknown) => void;
+    let resolveB!: (value: unknown) => void;
+
+    streamCheckProviderMock.mockImplementation((_appId: string, id: string) => {
+      if (id === "a") {
+        return new Promise((resolve) => {
+          resolveA = resolve;
+        });
+      }
+      return new Promise((resolve) => {
+        resolveB = resolve;
+      });
+    });
+
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [providerA, providerB],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ a: providerA, b: providerB }}
+        currentProviderId=""
+        appId="claude"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+
+    const testAllButton = await screen.findByRole("button", {
+      name: /测试所有|streamCheck\.testAll/,
+    });
+    fireEvent.click(testAllButton);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "confirm.streamCheck.confirm",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("is-testing-a")).toHaveTextContent("testing");
+      expect(screen.getByTestId("is-testing-b")).toHaveTextContent("testing");
+    });
+
+    resolveA({
+      status: "operational",
+      success: true,
+      message: "ok",
+      responseTimeMs: 111,
+      modelUsed: "claude-test",
+      testedAt: Date.now(),
+      retryCount: 0,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("is-testing-a")).toHaveTextContent("idle");
+      expect(screen.getByTestId("test-result-a")).toHaveTextContent("111");
+      expect(screen.getByTestId("is-testing-b")).toHaveTextContent("testing");
+      expect(screen.getByTestId("test-result-b")).toHaveTextContent("");
+    });
+
+    resolveB({
+      status: "operational",
+      success: true,
+      message: "ok",
+      responseTimeMs: 222,
+      modelUsed: "claude-test",
+      testedAt: Date.now(),
+      retryCount: 0,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("is-testing-b")).toHaveTextContent("idle");
+      expect(screen.getByTestId("test-result-b")).toHaveTextContent("222");
+    });
   });
 });

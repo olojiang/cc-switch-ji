@@ -308,6 +308,10 @@ export function ProviderCard({
       defaultValue: `测试失败：${testResult.message}`,
     });
   }, [t, testResult]);
+  const testResultResponseTime =
+    !isTesting && typeof testResult?.responseTimeMs === "number"
+      ? `${testResult.responseTimeMs}ms`
+      : null;
 
   return (
     <div
@@ -328,7 +332,10 @@ export function ProviderCard({
     >
       {(isTesting || testResult) && (
         <div
-          className="absolute right-3 top-3 z-20 inline-flex h-5 w-5 items-center justify-center rounded-full bg-background/90 shadow-sm ring-1 ring-border"
+          className={cn(
+            "absolute right-3 top-3 z-20 inline-flex h-5 items-center justify-center gap-1 rounded-full bg-background/90 shadow-sm ring-1 ring-border",
+            testResultResponseTime ? "px-1.5" : "w-5",
+          )}
           title={
             isTesting
               ? t("streamCheck.testing", { defaultValue: "测试中..." })
@@ -351,6 +358,11 @@ export function ProviderCard({
           ) : (
             <XCircle className="h-3.5 w-3.5 text-red-500" />
           )}
+          {testResultResponseTime && (
+            <span className="text-[10px] leading-none text-muted-foreground tabular-nums">
+              {testResultResponseTime}
+            </span>
+          )}
         </div>
       )}
       <div
@@ -367,7 +379,8 @@ export function ProviderCard({
       <div
         className={cn(
           "relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between",
-          (isTesting || testResult) && "pr-7",
+          (isTesting || testResult) &&
+            (testResultResponseTime ? "pr-16" : "pr-7"),
         )}
       >
         <div className="flex flex-1 items-center gap-2">

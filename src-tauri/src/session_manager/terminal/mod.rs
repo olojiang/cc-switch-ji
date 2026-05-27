@@ -81,11 +81,26 @@ end tell"#
 
 fn launch_ghostty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let args = build_macos_ghostty_args(command, cwd, &shell);
 
+    let status = Command::new("open")
+        .args(args.iter().map(String::as_str))
+        .status()
+        .map_err(|e| format!("Failed to launch Ghostty: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Failed to launch Ghostty. Make sure it is installed.".to_string())
+    }
+}
+
+fn build_macos_ghostty_args(command: &str, cwd: Option<&str>, shell: &str) -> Vec<String> {
     let mut args = vec![
-        "-na".to_string(),
+        "-a".to_string(),
         "Ghostty".to_string(),
         "--args".to_string(),
+        "--macos-dock-drop-behavior=new-tab".to_string(),
         "--quit-after-last-window-closed=true".to_string(),
     ];
 
@@ -96,21 +111,12 @@ fn launch_ghostty(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 
     args.push("-e".to_string());
-    args.push(shell);
+    args.push(shell.to_string());
     args.push("-l".to_string());
     args.push("-c".to_string());
     args.push(command.to_string());
 
-    let status = Command::new("open")
-        .args(&args)
-        .status()
-        .map_err(|e| format!("Failed to launch Ghostty: {e}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Failed to launch Ghostty. Make sure it is installed.".to_string())
-    }
+    args
 }
 
 fn launch_kitty(command: &str, cwd: Option<&str>) -> Result<(), String> {
@@ -378,5 +384,19 @@ mod tests {
 
         // Verify shell_escape works correctly for paths with spaces
         assert_eq!(shell_escape(cwd), "\"/tmp/project dir\"");
+    }
+
+    #[test]
+    fn ghostty_reuses_app_and_prefers_new_tab_on_macos() {
+        let args = build_macos_ghostty_args(
+            "claude --resume abc-123",
+            Some("/tmp/project dir"),
+            "/bin/zsh",
+        );
+
+        assert_eq!(args[0], "-a");
+        assert!(!args.iter().any(|arg| arg == "-n" || arg == "-na"));
+        assert!(args.contains(&"--macos-dock-drop-behavior=new-tab".to_string()));
+        assert!(args.contains(&"--working-directory=/tmp/project dir".to_string()));
     }
 }

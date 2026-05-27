@@ -2497,21 +2497,13 @@ fn launch_macos_iterm2(script_file: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// macOS: Ghostty — use --quit-after-last-window-closed to avoid cloning existing tabs
+/// macOS: Ghostty.
 #[cfg(target_os = "macos")]
 fn launch_macos_ghostty(script_file: &std::path::Path) -> Result<(), String> {
     use std::process::Command;
 
     let output = Command::new("open")
-        .args([
-            "-na",
-            "Ghostty",
-            "--args",
-            "--quit-after-last-window-closed=true",
-            "-e",
-            "bash",
-        ])
-        .arg(script_file)
+        .args(build_macos_ghostty_open_args(script_file))
         .output()
         .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
 
@@ -2525,6 +2517,20 @@ fn launch_macos_ghostty(script_file: &std::path::Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_ghostty_open_args(script_file: &std::path::Path) -> Vec<String> {
+    vec![
+        "-a".to_string(),
+        "Ghostty".to_string(),
+        "--args".to_string(),
+        "--macos-dock-drop-behavior=new-tab".to_string(),
+        "--quit-after-last-window-closed=true".to_string(),
+        "-e".to_string(),
+        "bash".to_string(),
+        script_file.display().to_string(),
+    ]
 }
 
 /// macOS: 使用 open -na 启动支持 --args 参数的终端（Alacritty/Kitty/WezTerm/Kaku）
@@ -4395,6 +4401,19 @@ mod tests {
         assert!(running_branch.contains("if (count of windows) = 0 then"));
         assert!(running_branch.contains("create window with default profile"));
         assert!(running_branch.contains("create tab with default profile"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ghostty_launcher_reuses_app_and_prefers_new_tab() {
+        let args = build_macos_ghostty_open_args(Path::new("/tmp/cc_switch_launcher.sh"));
+
+        assert_eq!(args[0], "-a");
+        assert!(!args.iter().any(|arg| arg == "-n" || arg == "-na"));
+        assert!(args.contains(&"--macos-dock-drop-behavior=new-tab".to_string()));
+        assert_eq!(args[args.len() - 3], "-e");
+        assert_eq!(args[args.len() - 2], "bash");
+        assert_eq!(args[args.len() - 1], "/tmp/cc_switch_launcher.sh");
     }
 
     #[test]
