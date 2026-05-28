@@ -3,6 +3,11 @@ import type { Provider } from "@/types";
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const UNQUOTED_VALUE_RE = /^[A-Za-z0-9_/@%+=:,.-]+$/;
+const DEFAULT_CLAUDE_PROXY_BASE_URL = "http://127.0.0.1:15721";
+const CLAUDE_AUTH_ENV_KEYS = new Set([
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -24,14 +29,24 @@ function pushRecordExports(
   lines: string[],
   seen: Set<string>,
   values: unknown,
+  options?: {
+    skipKeys?: Set<string>;
+    overrides?: Record<string, string | number | boolean>;
+  },
 ) {
   if (!isRecord(values)) return;
 
   for (const [key, value] of Object.entries(values)) {
-    if (!ENV_NAME_RE.test(key) || !isExportableValue(value) || seen.has(key)) {
+    const exportValue = options?.overrides?.[key] ?? value;
+    if (
+      !ENV_NAME_RE.test(key) ||
+      options?.skipKeys?.has(key) ||
+      !isExportableValue(exportValue) ||
+      seen.has(key)
+    ) {
       continue;
     }
-    lines.push(`export ${key}=${shellValue(value)}`);
+    lines.push(`export ${key}=${shellValue(exportValue)}`);
     seen.add(key);
   }
 }
@@ -73,6 +88,34 @@ function pushOpenAiCompatibleExports(
   }
 }
 
+function claudeProviderNeedsLocalProxy(provider: Provider): boolean {
+  const apiFormat = provider.meta?.apiFormat;
+  return Boolean(apiFormat && apiFormat !== "anthropic");
+}
+
+function pushClaudeEnvExports(
+  lines: string[],
+  seen: Set<string>,
+  provider: Provider,
+) {
+  const env = provider.settingsConfig.env;
+
+  if (!claudeProviderNeedsLocalProxy(provider)) {
+    pushRecordExports(lines, seen, env);
+    return;
+  }
+
+  pushMappedExport(
+    lines,
+    seen,
+    "ANTHROPIC_BASE_URL",
+    DEFAULT_CLAUDE_PROXY_BASE_URL,
+  );
+  pushRecordExports(lines, seen, env, {
+    skipKeys: new Set(["ANTHROPIC_BASE_URL", ...CLAUDE_AUTH_ENV_KEYS]),
+  });
+}
+
 export function buildProviderExports(provider: Provider, appId: AppId): string {
   const config = provider.settingsConfig;
   if (!isRecord(config)) return "";
@@ -80,7 +123,11 @@ export function buildProviderExports(provider: Provider, appId: AppId): string {
   const lines: string[] = [];
   const seen = new Set<string>();
 
-  pushRecordExports(lines, seen, config.env);
+  if (appId === "claude") {
+    pushClaudeEnvExports(lines, seen, provider);
+  } else {
+    pushRecordExports(lines, seen, config.env);
+  }
   pushRecordExports(lines, seen, config.auth);
 
   if (appId === "opencode" || appId === "openclaw" || appId === "hermes") {

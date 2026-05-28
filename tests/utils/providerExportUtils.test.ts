@@ -9,6 +9,14 @@ const provider = (settingsConfig: Record<string, unknown>): Provider => ({
   settingsConfig,
 });
 
+const providerWithMeta = (
+  settingsConfig: Record<string, unknown>,
+  meta: Provider["meta"],
+): Provider => ({
+  ...provider(settingsConfig),
+  meta,
+});
+
 describe("buildProviderExports", () => {
   it("builds Claude env exports in provider order", () => {
     expect(
@@ -69,6 +77,33 @@ describe("buildProviderExports", () => {
         "export OPENAI_BASE_URL=https://api.minimaxi.com/v1",
         "export OPENAI_API_KEY=sk-test",
         "export OPENAI_MODEL=MiniMax-M2.7",
+      ].join("\n"),
+    );
+  });
+
+  it("exports proxied Claude providers through the local CC Switch proxy", () => {
+    expect(
+      buildProviderExports(
+        providerWithMeta(
+          {
+            env: {
+              ANTHROPIC_AUTH_TOKEN: "sk-upstream",
+              ANTHROPIC_BASE_URL:
+                "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+              ANTHROPIC_MODEL: "doubao-seed-code-preview-251028",
+              ANTHROPIC_DEFAULT_SONNET_MODEL:
+                "doubao-seed-code-preview-251028",
+            },
+          },
+          { apiFormat: "openai_chat", isFullUrl: true },
+        ),
+        "claude",
+      ),
+    ).toBe(
+      [
+        "export ANTHROPIC_BASE_URL=http://127.0.0.1:15721",
+        "export ANTHROPIC_MODEL=doubao-seed-code-preview-251028",
+        "export ANTHROPIC_DEFAULT_SONNET_MODEL=doubao-seed-code-preview-251028",
       ].join("\n"),
     );
   });
