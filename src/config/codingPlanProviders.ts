@@ -14,8 +14,14 @@ export interface CodingPlanProviderEntry {
   id: "kimi" | "zhipu" | "minimax";
   /** UsageScriptModal 下拉显示用 */
   label: string;
-  /** base_url 匹配规则 */
-  pattern: RegExp;
+  /**
+   * base_url 自动匹配规则。
+   *
+   * MiniMax 的普通 API 和 Coding Plan 共用 `api.minimaxi.com` /
+   * `api.minimax.io` 域名，无法仅凭 URL 区分套餐状态；因此保留在
+   * UsageScriptModal 中手动选择，但不自动注入。
+   */
+  pattern?: RegExp;
 }
 
 export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
@@ -28,7 +34,6 @@ export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
   {
     id: "minimax",
     label: "MiniMax",
-    pattern: /api\.minimaxi?\.com|api\.minimax\.io/i,
   },
 ] as const;
 
@@ -38,7 +43,7 @@ export function detectCodingPlanProvider(
 ): CodingPlanProviderEntry["id"] | null {
   if (!baseUrl) return null;
   for (const cp of CODING_PLAN_PROVIDERS) {
-    if (cp.pattern.test(baseUrl)) return cp.id;
+    if (cp.pattern?.test(baseUrl)) return cp.id;
   }
   return null;
 }
